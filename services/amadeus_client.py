@@ -46,6 +46,29 @@ _MOCK_HOTELS: dict[str, list[dict]] = {
         {"name": "Hotel V Nesplein", "stars": 4, "price_per_night_usd": 215, "rating": 4.4, "amenities": ["Free WiFi", "Bar", "Jordaan district"]},
         {"name": "Stayokay Amsterdam Vondelpark", "stars": 3, "price_per_night_usd": 105, "rating": 4.0, "amenities": ["Free WiFi", "Bar", "Vondelpark location"]},
     ],
+    "TYO": [
+        {"name": "Park Hyatt Tokyo", "stars": 5, "price_per_night_usd": 680, "rating": 4.9, "amenities": ["Pool", "Spa", "New Shinjuku view", "Fine dining", "Gym"]},
+        {"name": "Andaz Tokyo Toranomon Hills", "stars": 5, "price_per_night_usd": 520, "rating": 4.8, "amenities": ["Rooftop bar", "Spa", "City view", "Free minibar"]},
+        {"name": "Shinjuku Granbell Hotel", "stars": 4, "price_per_night_usd": 195, "rating": 4.4, "amenities": ["Free WiFi", "Bar", "Shinjuku location", "Modern design"]},
+        {"name": "APA Hotel Shinjuku", "stars": 3, "price_per_night_usd": 115, "rating": 4.1, "amenities": ["Free WiFi", "Near train station", "24h reception"]},
+        {"name": "Khaosan Tokyo Kabuki", "stars": 2, "price_per_night_usd": 65, "rating": 3.9, "amenities": ["Free WiFi", "Common kitchen", "Asakusa district"]},
+    ],
+    "KYO": [
+        {"name": "The Thousand Kyoto", "stars": 5, "price_per_night_usd": 480, "rating": 4.8, "amenities": ["Spa", "Near Kyoto Station", "Japanese garden", "Fine dining"]},
+        {"name": "Hotel Granvia Kyoto", "stars": 4, "price_per_night_usd": 245, "rating": 4.5, "amenities": ["Free WiFi", "Restaurant", "Direct station access"]},
+        {"name": "Mitsui Garden Hotel Kyoto Shijo", "stars": 4, "price_per_night_usd": 185, "rating": 4.3, "amenities": ["Free WiFi", "Near Gion", "Traditional décor"]},
+        {"name": "Piece Hostel Kyoto", "stars": 3, "price_per_night_usd": 75, "rating": 4.2, "amenities": ["Free WiFi", "Common lounge", "Near Nijo Castle"]},
+    ],
+    "NYC": [
+        {"name": "The Plaza Hotel", "stars": 5, "price_per_night_usd": 795, "rating": 4.8, "amenities": ["Spa", "Central Park view", "Fine dining", "Butler service"]},
+        {"name": "Ace Hotel New York", "stars": 4, "price_per_night_usd": 295, "rating": 4.4, "amenities": ["Free WiFi", "Rooftop bar", "Midtown location"]},
+        {"name": "Pod 51", "stars": 3, "price_per_night_usd": 145, "rating": 4.0, "amenities": ["Free WiFi", "Compact rooms", "Midtown East"]},
+    ],
+    "LON": [
+        {"name": "The Savoy", "stars": 5, "price_per_night_usd": 850, "rating": 4.9, "amenities": ["Spa", "River Thames view", "Fine dining", "Historic building"]},
+        {"name": "Hoxton Shoreditch", "stars": 4, "price_per_night_usd": 230, "rating": 4.5, "amenities": ["Free WiFi", "Bar", "Trendy East London"]},
+        {"name": "Point A Hotel London Kings Cross", "stars": 3, "price_per_night_usd": 120, "rating": 4.0, "amenities": ["Free WiFi", "Near Kings Cross", "Compact design"]},
+    ],
 }
 
 # Generic fallback for cities not in the mock dict
@@ -168,34 +191,41 @@ class AmadeusClient(FlightProvider, HotelProvider):
         headers = await self._auth_headers()
 
         # Step 1: Get hotel IDs for city
-        hotels_resp = await self._http.get(
-            f"{AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city",
-            headers=headers,
-            params={"cityCode": city_code.upper(), "radius": 5, "radiusUnit": "KM"},
-        )
-        hotels_resp.raise_for_status()
-        hotel_ids = [
-            h["hotelId"]
-            for h in hotels_resp.json().get("data", [])[:max_results]
-        ]
+        try:
+            hotels_resp = await self._http.get(
+                f"{AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city",
+                headers=headers,
+                params={"cityCode": city_code.upper(), "radius": 5, "radiusUnit": "KM"},
+            )
+            hotels_resp.raise_for_status()
+            hotel_ids = [
+                h["hotelId"]
+                for h in hotels_resp.json().get("data", [])[:max_results]
+            ]
+        except Exception:
+            return _mock_hotels_for(city_code, max_results)
 
         if not hotel_ids:
             return _mock_hotels_for(city_code, max_results)
 
         # Step 2: Get offers for those hotels
-        offers_resp = await self._http.get(
-            f"{AMADEUS_BASE}/v3/shopping/hotel-offers",
-            headers=headers,
-            params={
-                "hotelIds": ",".join(hotel_ids),
-                "checkInDate": check_in,
-                "checkOutDate": check_out,
-                "adults": str(num_adults),
-                "currency": "USD",
-                "bestRateOnly": "true",
-            },
-        )
-        offers_resp.raise_for_status()
+        try:
+            offers_resp = await self._http.get(
+                f"{AMADEUS_BASE}/v3/shopping/hotel-offers",
+                headers=headers,
+                params={
+                    "hotelIds": ",".join(hotel_ids),
+                    "checkInDate": check_in,
+                    "checkOutDate": check_out,
+                    "adults": str(num_adults),
+                    "currency": "USD",
+                    "bestRateOnly": "true",
+                },
+            )
+            offers_resp.raise_for_status()
+        except Exception:
+            return _mock_hotels_for(city_code, max_results)
+
         data = offers_resp.json()
 
         results: list[HotelResult] = []
