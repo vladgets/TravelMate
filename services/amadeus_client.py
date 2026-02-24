@@ -1,4 +1,10 @@
-"""Amadeus free sandbox client — implements both FlightProvider and HotelProvider."""
+"""Amadeus free sandbox client — implements both FlightProvider and HotelProvider.
+
+Note on sandbox hotel coverage: Amadeus sandbox has very limited hotel data and
+returns zero results for most cities (including Barcelona, Lisbon, etc.).
+search_hotels() falls back to curated mock data when the sandbox returns nothing,
+so demos work regardless of sandbox coverage gaps.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,48 @@ import httpx
 
 from models.travel_models import FlightResult, HotelResult
 from services.base_travel_provider import FlightProvider, HotelProvider
+
+# Curated mock hotels keyed by IATA city code.
+# Used as fallback when Amadeus sandbox returns zero results.
+_MOCK_HOTELS: dict[str, list[dict]] = {
+    "BCN": [
+        {"name": "Hotel Arts Barcelona", "stars": 5, "price_per_night_usd": 420, "rating": 4.8, "amenities": ["Pool", "Spa", "Sea view", "Michelin restaurant", "Gym"]},
+        {"name": "Barceló Raval", "stars": 4, "price_per_night_usd": 195, "rating": 4.3, "amenities": ["Rooftop terrace", "Bar", "City view", "Free WiFi"]},
+        {"name": "Hotel Catalonia Born", "stars": 4, "price_per_night_usd": 165, "rating": 4.2, "amenities": ["Free WiFi", "Bar", "24h reception", "Near La Boqueria"]},
+        {"name": "Praktik Rambla", "stars": 3, "price_per_night_usd": 110, "rating": 4.0, "amenities": ["Free WiFi", "Central location", "Breakfast available"]},
+        {"name": "Generator Barcelona", "stars": 3, "price_per_night_usd": 85, "rating": 3.8, "amenities": ["Bar", "Terrace", "Free WiFi", "Near Sagrada Família"]},
+    ],
+    "LIS": [
+        {"name": "Bairro Alto Hotel", "stars": 5, "price_per_night_usd": 380, "rating": 4.9, "amenities": ["Rooftop bar", "Spa", "City view", "Restaurant"]},
+        {"name": "Hotel do Chiado", "stars": 4, "price_per_night_usd": 210, "rating": 4.5, "amenities": ["Free WiFi", "Bar", "City center", "Breakfast"]},
+        {"name": "Lisboa Carmo Hotel", "stars": 4, "price_per_night_usd": 175, "rating": 4.3, "amenities": ["Free WiFi", "Terrace", "Near tram 28"]},
+        {"name": "My Story Hotel Rossio", "stars": 3, "price_per_night_usd": 120, "rating": 4.1, "amenities": ["Free WiFi", "Central location", "24h reception"]},
+    ],
+    "PAR": [
+        {"name": "Le Bristol Paris", "stars": 5, "price_per_night_usd": 950, "rating": 4.9, "amenities": ["Pool", "Spa", "3 restaurants", "Garden", "Butler service"]},
+        {"name": "Hotel du Louvre", "stars": 4, "price_per_night_usd": 340, "rating": 4.5, "amenities": ["Free WiFi", "Bar", "Louvre view", "Concierge"]},
+        {"name": "Hotel Fabric", "stars": 4, "price_per_night_usd": 220, "rating": 4.4, "amenities": ["Free WiFi", "Bar", "Oberkampf district"]},
+        {"name": "Generator Paris", "stars": 3, "price_per_night_usd": 95, "rating": 3.9, "amenities": ["Bar", "Free WiFi", "Near canal St-Martin"]},
+    ],
+    "ROM": [
+        {"name": "Hotel Eden Roma", "stars": 5, "price_per_night_usd": 680, "rating": 4.8, "amenities": ["Rooftop pool", "Spa", "Via Veneto", "Fine dining"]},
+        {"name": "Hotel Nazionale", "stars": 4, "price_per_night_usd": 290, "rating": 4.4, "amenities": ["Free WiFi", "Bar", "Near Pantheon"]},
+        {"name": "The Beehive", "stars": 3, "price_per_night_usd": 130, "rating": 4.2, "amenities": ["Garden", "Organic café", "Free WiFi", "Near Termini"]},
+    ],
+    "AMS": [
+        {"name": "Pulitzer Amsterdam", "stars": 5, "price_per_night_usd": 480, "rating": 4.7, "amenities": ["Canal view", "Bar", "Garden", "Bikes available"]},
+        {"name": "Hotel V Nesplein", "stars": 4, "price_per_night_usd": 215, "rating": 4.4, "amenities": ["Free WiFi", "Bar", "Jordaan district"]},
+        {"name": "Stayokay Amsterdam Vondelpark", "stars": 3, "price_per_night_usd": 105, "rating": 4.0, "amenities": ["Free WiFi", "Bar", "Vondelpark location"]},
+    ],
+}
+
+# Generic fallback for cities not in the mock dict
+_GENERIC_HOTELS = [
+    {"name": "Grand City Hotel", "stars": 4, "price_per_night_usd": 220, "rating": 4.3, "amenities": ["Free WiFi", "Bar", "Gym", "Breakfast"]},
+    {"name": "Boutique Central Hotel", "stars": 4, "price_per_night_usd": 175, "rating": 4.2, "amenities": ["Free WiFi", "City center", "24h reception"]},
+    {"name": "Comfort Inn Downtown", "stars": 3, "price_per_night_usd": 130, "rating": 4.0, "amenities": ["Free WiFi", "Breakfast", "Parking"]},
+    {"name": "Budget Stay Hotel", "stars": 3, "price_per_night_usd": 95, "rating": 3.8, "amenities": ["Free WiFi", "24h reception"]},
+]
 
 AMADEUS_BASE = "https://test.api.amadeus.com"
 TOKEN_URL = f"{AMADEUS_BASE}/v1/security/oauth2/token"
@@ -132,7 +180,7 @@ class AmadeusClient(FlightProvider, HotelProvider):
         ]
 
         if not hotel_ids:
-            return []
+            return _mock_hotels_for(city_code, max_results)
 
         # Step 2: Get offers for those hotels
         offers_resp = await self._http.get(
@@ -173,10 +221,30 @@ class AmadeusClient(FlightProvider, HotelProvider):
             except (KeyError, ValueError):
                 continue
 
+        # Sandbox returned hotel IDs but no offers — fall back to mock data
+        if not results:
+            return _mock_hotels_for(city_code, max_results)
+
         return results
 
     async def aclose(self):
         await self._http.aclose()
+
+
+def _mock_hotels_for(city_code: str, max_results: int) -> list[HotelResult]:
+    """Return curated mock hotels for cities not covered by Amadeus sandbox."""
+    raw = _MOCK_HOTELS.get(city_code.upper(), _GENERIC_HOTELS)
+    return [
+        HotelResult(
+            name=h["name"],
+            stars=h["stars"],
+            price_per_night_usd=h["price_per_night_usd"],
+            rating=h["rating"],
+            amenities=h["amenities"],
+            hotel_id=f"MOCK_{city_code.upper()}_{i}",
+        )
+        for i, h in enumerate(raw[:max_results])
+    ]
 
 
 def _parse_iso_duration(duration: str) -> float:
