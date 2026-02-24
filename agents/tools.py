@@ -180,7 +180,10 @@ TOOL_SCHEMAS: list[dict] = [
 
 async def _tool_parse_travel_request(args: dict) -> dict:
     """Use LLM with JSON mode to extract structured params from free text."""
+    import datetime
     settings = get_settings()
+    today = datetime.date.today().isoformat()
+
     response = await litellm.acompletion(
         model=settings.llm_model,
         messages=[
@@ -188,13 +191,19 @@ async def _tool_parse_travel_request(args: dict) -> dict:
                 "role": "system",
                 "content": (
                     "Extract travel parameters from the user's request and return ONLY valid JSON "
-                    "with these fields: origin (IATA airport code), destination (IATA airport code), "
-                    "city_code (IATA city code, usually same as destination airport), "
-                    "depart_date (YYYY-MM-DD), return_date (YYYY-MM-DD or null), "
-                    "num_adults (integer, default 2), budget_usd (number or null), "
-                    "preferences (list of strings). "
-                    "Today's date is 2026-02-20. Infer reasonable dates if only month is mentioned. "
-                    "Use the next occurrence of that month. "
+                    "with these fields:\n"
+                    "- origin (IATA airport code, e.g. SFO, JFK)\n"
+                    "- destination (IATA airport code for the PRIMARY/FIRST destination)\n"
+                    "- city_code (IATA city code for the primary destination, usually same as destination airport)\n"
+                    "- depart_date (YYYY-MM-DD)\n"
+                    "- return_date (YYYY-MM-DD or null)\n"
+                    "- num_adults (integer, default 2)\n"
+                    "- budget_usd (number or null)\n"
+                    "- preferences (list of strings — include travel style, interests, AND any additional cities/stops)\n\n"
+                    "For multi-city trips (e.g. Tokyo + Kyoto), set destination to the first city and "
+                    "list subsequent cities in preferences (e.g. 'also visiting Kyoto for 4 nights').\n\n"
+                    f"Today's date is {today}. Infer reasonable dates if only a month is mentioned — "
+                    "use the next upcoming occurrence of that month.\n\n"
                     "Return ONLY the JSON object, no explanation."
                 ),
             },
@@ -203,6 +212,11 @@ async def _tool_parse_travel_request(args: dict) -> dict:
         response_format={"type": "json_object"},
     )
     content = response.choices[0].message.content
+    if not content:
+        raise ValueError(
+            "LLM returned empty response for travel request parsing. "
+            "Try rephrasing your request with a clear origin, destination, and dates."
+        )
     return json.loads(content)
 
 
