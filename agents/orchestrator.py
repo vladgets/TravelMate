@@ -14,16 +14,19 @@ Key agentic behaviors demonstrated:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
 import chainlit as cl
 import litellm
+from litellm.exceptions import RateLimitError
 
 from agents.tools import TOOL_SCHEMAS, execute_tool_calls_parallel
 from config.settings import Settings
 
 MAX_ITERATIONS = 10  # Safety limit on agentic loop depth
+_RETRY_DELAYS = [5, 15, 30]  # Seconds to wait on successive rate-limit hits
 
 
 def _load_system_prompt() -> str:
@@ -39,6 +42,23 @@ class TravelOrchestrator:
         self.model = settings.llm_model
         self.system_prompt = _load_system_prompt()
         self._configure_litellm()
+
+    async def _completion_with_retry(self, history: list[dict]):
+        """Call LiteLLM with automatic retry on rate limit errors."""
+        for attempt, delay in enumerate([0] + _RETRY_DELAYS):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                return await litellm.acompletion(
+                    model=self.model,
+                    messages=[{"role": "system", "content": self.system_prompt}] + history,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                )
+            except RateLimitError:
+                if attempt == len(_RETRY_DELAYS):
+                    raise
+        raise RuntimeError("Unreachable")
 
     def _configure_litellm(self):
         """Set API keys for whichever provider is being used."""
@@ -60,12 +80,7 @@ class TravelOrchestrator:
         history.append({"role": "user", "content": user_message})
 
         for iteration in range(MAX_ITERATIONS):
-            response = await litellm.acompletion(
-                model=self.model,
-                messages=[{"role": "system", "content": self.system_prompt}] + history,
-                tools=TOOL_SCHEMAS,
-                tool_choice="auto",
-            )
+            response = await self._completion_with_retry(history)
 
             choice = response.choices[0]
             assistant_message = choice.message

@@ -69,7 +69,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "check_in":    {"type": "string", "description": "YYYY-MM-DD"},
                     "check_out":   {"type": "string", "description": "YYYY-MM-DD"},
                     "num_adults":  {"type": "integer"},
-                    "max_results": {"type": "integer", "default": 5},
+                    "max_results": {"type": "integer", "default": 3},
                 },
                 "required": ["city_code", "check_in", "check_out", "num_adults"],
             },
@@ -298,25 +298,25 @@ async def _tool_search_hotel_details(args: dict) -> dict:
             client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             hotel_list = "\n".join(f"- {name}" for name in hotel_names)
 
+            # Cap at 3 hotels to limit web search token usage
+            hotel_names = hotel_names[:3]
+            hotel_list = "\n".join(f"- {name}" for name in hotel_names)
+
             response = await client.messages.create(
                 model=settings.llm_model,
-                max_tokens=2048,
+                max_tokens=800,
                 tools=[{
                     "type": "web_search_20250305",
                     "name": "web_search",
-                    "max_uses": len(hotel_names) + 2,
+                    "max_uses": 3,
                 }],
                 messages=[{
                     "role": "user",
                     "content": (
-                        f"Search for each of these hotels in {city} and return ONLY a JSON array. "
-                        f"For each hotel find: official website URL, a 2-sentence description "
-                        f"highlighting key features and location, and a hero image URL "
-                        f"(look for og:image meta tag or main property photo on the official site).\n\n"
-                        f"Hotels:\n{hotel_list}\n\n"
-                        f"Return ONLY a valid JSON array, no markdown, no explanation:\n"
-                        f'[{{"name": "...", "website_url": "https://...", '
-                        f'"description": "...", "image_url": "https://..."}}]'
+                        f"Search for these hotels in {city}. "
+                        f"Return ONLY a JSON array with name, website_url, description (1 sentence), image_url:\n"
+                        f"{hotel_list}\n\n"
+                        f'[{{"name":"...","website_url":"https://...","description":"...","image_url":"https://..."}}]'
                     ),
                 }],
             )
