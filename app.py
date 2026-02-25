@@ -15,14 +15,16 @@ from agents.orchestrator import TravelOrchestrator
 from config.settings import get_settings
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    settings = get_settings()
-    orchestrator = TravelOrchestrator(settings)
+def _clear_action() -> cl.Action:
+    return cl.Action(
+        name="clear_history",
+        label="🗑️ New Conversation",
+        value="clear",
+        description="Clear conversation history to start a fresh request",
+    )
 
-    cl.user_session.set("orchestrator", orchestrator)
-    cl.user_session.set("history", [])
 
+async def _send_welcome(settings):
     provider = settings.hotel_provider.upper()
     model_display = settings.llm_model
 
@@ -38,7 +40,29 @@ async def on_chat_start():
             f"🤖 **Model:** `{model_display}` &nbsp;|&nbsp; "
             f"🏨 **Hotel data:** `{provider}` &nbsp;|&nbsp; "
             f"✈️ **Flights:** `Amadeus sandbox`"
-        )
+        ),
+        actions=[_clear_action()],
+    ).send()
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    settings = get_settings()
+    orchestrator = TravelOrchestrator(settings)
+
+    cl.user_session.set("orchestrator", orchestrator)
+    cl.user_session.set("history", [])
+
+    await _send_welcome(settings)
+
+
+@cl.action_callback("clear_history")
+async def on_clear_history(action: cl.Action):
+    cl.user_session.set("history", [])
+    await action.remove()
+    await cl.Message(
+        content="🗑️ **Conversation cleared.** Start a new trip request below.",
+        actions=[_clear_action()],
     ).send()
 
 
@@ -58,6 +82,7 @@ async def on_message(message: cl.Message):
             cl_msg=response_msg,
         )
         response_msg.content = result
+        response_msg.actions = [_clear_action()]
         await response_msg.update()
     except Exception as exc:
         response_msg.content = (
