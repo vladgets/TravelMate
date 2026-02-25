@@ -28,17 +28,11 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "parse_travel_request",
-            "description": (
-                "Extract structured travel parameters from a natural-language user request. "
-                "Call this FIRST before any search tools."
-            ),
+            "description": "Extract structured travel params from natural language. Call FIRST.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "user_message": {
-                        "type": "string",
-                        "description": "The raw user travel request in natural language.",
-                    }
+                    "user_message": {"type": "string"},
                 },
                 "required": ["user_message"],
             },
@@ -48,23 +42,16 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_flights",
-            "description": "Search for available flights using Amadeus sandbox data.",
+            "description": "Search available flights. Run in parallel with get_weather.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "origin": {"type": "string", "description": "IATA airport code (e.g. JFK)"},
-                    "destination": {"type": "string", "description": "IATA airport code (e.g. BCN)"},
-                    "depart_date": {"type": "string", "description": "Departure date YYYY-MM-DD"},
-                    "return_date": {
-                        "type": "string",
-                        "description": "Return date YYYY-MM-DD (null for one-way)",
-                    },
-                    "num_adults": {"type": "integer", "description": "Number of adult travelers"},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum flight offers to return",
-                        "default": 5,
-                    },
+                    "origin":       {"type": "string", "description": "IATA code"},
+                    "destination":  {"type": "string", "description": "IATA code"},
+                    "depart_date":  {"type": "string", "description": "YYYY-MM-DD"},
+                    "return_date":  {"type": "string", "description": "YYYY-MM-DD or null"},
+                    "num_adults":   {"type": "integer"},
+                    "max_results":  {"type": "integer", "default": 5},
                 },
                 "required": ["origin", "destination", "depart_date", "num_adults"],
             },
@@ -74,22 +61,15 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_hotels",
-            "description": "Search for hotels using Amadeus sandbox (or Expedia Rapid if configured).",
+            "description": "Search hotels. Use check_in=depart_date, check_out=return_date exactly.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "city_code": {
-                        "type": "string",
-                        "description": "IATA city code (e.g. BCN for Barcelona)",
-                    },
-                    "check_in": {"type": "string", "description": "Check-in date YYYY-MM-DD"},
-                    "check_out": {"type": "string", "description": "Check-out date YYYY-MM-DD"},
-                    "num_adults": {"type": "integer", "description": "Number of guests"},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum hotel results",
-                        "default": 5,
-                    },
+                    "city_code":   {"type": "string", "description": "IATA city code"},
+                    "check_in":    {"type": "string", "description": "YYYY-MM-DD"},
+                    "check_out":   {"type": "string", "description": "YYYY-MM-DD"},
+                    "num_adults":  {"type": "integer"},
+                    "max_results": {"type": "integer", "default": 5},
                 },
                 "required": ["city_code", "check_in", "check_out", "num_adults"],
             },
@@ -99,15 +79,12 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Get current weather conditions for a city (wttr.in, no auth required).",
+            "description": "Get destination weather. Run in parallel with search_flights.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "city": {"type": "string", "description": "City name (e.g. Barcelona)"},
-                    "date": {
-                        "type": "string",
-                        "description": "Target date YYYY-MM-DD (used for context only)",
-                    },
+                    "city": {"type": "string"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
                 },
                 "required": ["city", "date"],
             },
@@ -117,29 +94,20 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "calculate_budget",
-            "description": "Calculate total trip cost and check against user budget.",
+            "description": "Calculate total trip cost and validate against user budget.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "flight_price_usd": {"type": "number", "description": "Total round-trip flight cost"},
-                    "hotel_price_per_night_usd": {"type": "number", "description": "Hotel nightly rate"},
-                    "num_nights": {"type": "integer", "description": "Number of hotel nights"},
-                    "num_people": {"type": "integer", "description": "Number of travelers"},
-                    "daily_expenses_usd": {
-                        "type": "number",
-                        "description": "Estimated daily food/activities per person",
-                    },
-                    "budget_usd": {
-                        "type": "number",
-                        "description": "User's total budget (null if not specified)",
-                    },
+                    "flight_price_usd":         {"type": "number"},
+                    "hotel_price_per_night_usd": {"type": "number"},
+                    "num_nights":               {"type": "integer"},
+                    "num_people":               {"type": "integer"},
+                    "daily_expenses_usd":        {"type": "number", "description": "Per person/day"},
+                    "budget_usd":               {"type": "number"},
                 },
                 "required": [
-                    "flight_price_usd",
-                    "hotel_price_per_night_usd",
-                    "num_nights",
-                    "num_people",
-                    "daily_expenses_usd",
+                    "flight_price_usd", "hotel_price_per_night_usd",
+                    "num_nights", "num_people", "daily_expenses_usd",
                 ],
             },
         },
@@ -148,23 +116,12 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_hotel_details",
-            "description": (
-                "Search the web to find the official website URL, a short description, "
-                "and a hero image URL for a list of hotels — all in one call. "
-                "Call this after search_hotels, passing all returned hotel names at once."
-            ),
+            "description": "Web-search all hotels at once for website URL, description, and hero image.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "hotel_names": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of hotel names to search for",
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "City where the hotels are located (e.g. Barcelona)",
-                    },
+                    "hotel_names": {"type": "array", "items": {"type": "string"}},
+                    "city":        {"type": "string"},
                 },
                 "required": ["hotel_names", "city"],
             },
@@ -174,28 +131,17 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "format_itinerary",
-            "description": "Produce a polished markdown itinerary from all gathered trip data.",
+            "description": "Produce the final polished markdown itinerary with images and links.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "destination": {"type": "string"},
-                    "dates": {
-                        "type": "object",
-                        "description": "{'depart': str, 'return': str, 'num_nights': int}",
-                    },
-                    "flight": {"type": "object", "description": "Best flight offer dict"},
-                    "hotels": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "List of hotel offers merged with web-search details (name, price, stars, website_url, description, image_url)",
-                    },
-                    "weather": {"type": "object", "description": "Weather info dict"},
-                    "budget_summary": {"type": "object", "description": "Budget breakdown dict"},
-                    "tips": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Travel tips for the destination",
-                    },
+                    "destination":    {"type": "string"},
+                    "dates":          {"type": "object"},
+                    "flight":         {"type": "object"},
+                    "hotels":         {"type": "array", "items": {"type": "object"}},
+                    "weather":        {"type": "object"},
+                    "budget_summary": {"type": "object"},
+                    "tips":           {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["destination", "dates"],
             },
