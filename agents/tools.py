@@ -10,13 +10,27 @@ from __future__ import annotations
 
 import json
 import asyncio
+import logging
 from typing import Any
 
 import chainlit as cl
 import litellm
 
+logger = logging.getLogger(__name__)
+
 from config.settings import get_settings
 from models.travel_models import TravelRequest
+
+
+def _get_active_model() -> str:
+    """Return the model selected for this session, falling back to the default from settings."""
+    try:
+        model = cl.user_session.get("active_model")
+        if model:
+            return model
+    except Exception:
+        pass
+    return get_settings().llm_model
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +130,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_hotel_details",
-            "description": "Web-search all hotels at once for website URL, description, and hero image.",
+            "description": "Web-search all hotels at once for website URL and description.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -137,7 +151,8 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "destination":    {"type": "string"},
                     "dates":          {"type": "object"},
-                    "flight":         {"type": "object"},
+                    "flights":        {"type": "array", "items": {"type": "object"}, "description": "All available flights from search_flights result"},
+                    "recommended_flight_index": {"type": "integer", "description": "Index of the best-value flight in the flights array"},
                     "hotels":         {"type": "array", "items": {"type": "object"}},
                     "weather":        {"type": "object"},
                     "budget_summary": {"type": "object"},
@@ -180,11 +195,10 @@ def _extract_json_object(text: str) -> dict:
 async def _tool_parse_travel_request(args: dict) -> dict:
     """Use LLM with JSON mode to extract structured params from free text."""
     import datetime
-    settings = get_settings()
     today = datetime.date.today().isoformat()
 
     response = await litellm.acompletion(
-        model=settings.llm_model,
+        model=_get_active_model(),
         messages=[
             {
                 "role": "system",
@@ -240,7 +254,15 @@ async def _tool_search_flights(args: dict, cl_msg) -> dict:
             num_adults=args.get("num_adults", 2),
             max_results=args.get("max_results", 5),
         )
-        return {"flights": [r.model_dump() for r in results]}
+        # Deduplicate: sandbox sometimes returns identical flights
+        seen: set[tuple] = set()
+        unique = []
+        for r in results:
+            key = (r.airline, r.stops, r.depart_time[:13], round(r.price_usd, -1))
+            if key not in seen:
+                seen.add(key)
+                unique.append(r)
+        return {"flights": [r.model_dump() for r in unique]}
     finally:
         await client.aclose()
 
@@ -282,61 +304,78 @@ async def _tool_get_weather(args: dict) -> dict:
         await client.aclose()
 
 
-async def _tool_search_hotel_details(args: dict) -> dict:
-    """Use Claude web search to get website, description, and image for all hotels in one call."""
-    import re
-    import anthropic
 
-    hotel_names = args["hotel_names"]
+
+
+async def _tool_search_hotel_details(args: dict) -> dict:
+    """Use web search to get website, description, and image for all hotels in one call.
+
+    Supports Anthropic (web_search_20250305) and OpenAI (web_search_preview via Responses API).
+    Falls back to Google search URLs if neither is available.
+    """
+    import re
+
+    hotel_names = args["hotel_names"][:3]  # Cap at 3 to limit web search costs
     city = args["city"]
     settings = get_settings()
+    active_model = _get_active_model()
 
-    is_claude = "claude" in settings.llm_model.lower()
+    _SEARCH_PROMPT = (
+        f"Search for these hotels in {city}. "
+        f"Return ONLY a JSON array with name, website_url, description (1 sentence):\n"
+        + "\n".join(f"- {name}" for name in hotel_names)
+        + f'\n\n[{{"name":"...","website_url":"https://...","description":"..."}}]'
+    )
 
-    if is_claude and settings.anthropic_api_key:
+    # --- Anthropic path ---
+    if "claude" in active_model.lower() and settings.anthropic_api_key:
         try:
+            import anthropic
             client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-            hotel_list = "\n".join(f"- {name}" for name in hotel_names)
-
-            # Cap at 3 hotels to limit web search token usage
-            hotel_names = hotel_names[:3]
-            hotel_list = "\n".join(f"- {name}" for name in hotel_names)
-
             response = await client.messages.create(
-                model=settings.llm_model,
+                model=active_model,
                 max_tokens=800,
-                tools=[{
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 3,
-                }],
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Search for these hotels in {city}. "
-                        f"Return ONLY a JSON array with name, website_url, description (1 sentence), image_url:\n"
-                        f"{hotel_list}\n\n"
-                        f'[{{"name":"...","website_url":"https://...","description":"...","image_url":"https://..."}}]'
-                    ),
-                }],
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                messages=[{"role": "user", "content": _SEARCH_PROMPT}],
             )
-
-            # Extract the final text block (after web search tool use blocks)
             text_content = next(
-                (block.text for block in response.content if hasattr(block, "text")),
-                "",
+                (block.text for block in response.content if hasattr(block, "text")), ""
             )
-
-            # Strip markdown code fences if present
             text_content = re.sub(r"```(?:json)?\s*|\s*```", "", text_content).strip()
-            json_match = re.search(r"\[.*\]", text_content, re.DOTALL)
-            if json_match:
-                return {"hotels": json.loads(json_match.group())}
+            match = re.search(r"\[.*\]", text_content, re.DOTALL)
+            if match:
+                hotels = json.loads(match.group())
+                return {"hotels": hotels}
+        except Exception as exc:
+            logger.warning("[search_hotel_details] Anthropic path failed: %s", exc)
 
-        except Exception:
-            pass  # Fall through to Google search fallback
+    # --- OpenAI path (Responses API with web_search_preview) ---
+    if "gpt" in active_model.lower() and settings.openai_api_key:
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            response = await client.responses.create(
+                model=active_model,
+                tools=[{"type": "web_search_preview"}],
+                input=_SEARCH_PROMPT,
+            )
+            # Extract text from the message output item
+            text_content = ""
+            for item in response.output:
+                if item.type == "message":
+                    for block in item.content:
+                        if block.type == "output_text":
+                            text_content = block.text
+                            break
+            text_content = re.sub(r"```(?:json)?\s*|\s*```", "", text_content).strip()
+            match = re.search(r"\[.*\]", text_content, re.DOTALL)
+            if match:
+                hotels = json.loads(match.group())
+                return {"hotels": hotels}
+        except Exception as exc:
+            logger.warning("[search_hotel_details] OpenAI path failed: %s", exc)
 
-    # Fallback: construct Google search URLs (works for any model)
+    # --- Fallback: static Google search URLs ---
     return {
         "hotels": [
             {
@@ -346,7 +385,6 @@ async def _tool_search_hotel_details(args: dict) -> dict:
                     f"{name.replace(' ', '+')}+{city.replace(' ', '+')}+official+site"
                 ),
                 "description": "",
-                "image_url": "",
             }
             for name in hotel_names
         ]
@@ -384,24 +422,37 @@ def _tool_calculate_budget(args: dict) -> dict:
 
 
 async def _tool_format_itinerary(args: dict) -> dict:
-    settings = get_settings()
+    writer_model = get_settings().writer_model
+    logger.info("[format_itinerary] Using writer model: %s", writer_model)
     response = await litellm.acompletion(
-        model=settings.llm_model,
+        model=writer_model,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "You are a travel writer. Produce a beautifully formatted markdown itinerary "
-                    "using the provided trip data. Include these sections:\n\n"
-                    "1. **Flight Details** — airline, price, duration, stops, times\n"
-                    "2. **Accommodation Options** — for each hotel in the `hotels` list:\n"
-                    "   - If `image_url` is present and non-empty: embed it as `![Hotel Name](image_url)`\n"
-                    "   - Render the hotel name as a clickable link using `website_url`: `[Name](url)`\n"
-                    "   - Show stars, nightly rate, description, and amenities\n"
-                    "3. **Weather Forecast** — conditions, temperature, what to pack\n"
-                    "4. **Budget Summary** — clear breakdown table\n"
-                    "5. **Top Travel Tips** — 4-5 specific, actionable tips\n\n"
-                    "Make it engaging and practical. Use emojis sparingly."
+                    "You are an enthusiastic luxury travel writer. Produce a rich, beautifully formatted "
+                    "markdown itinerary. Use emojis generously. Structure it exactly as follows:\n\n"
+                    "# ✈️ [Destination] Getaway — [dates]\n"
+                    "A warm 2-sentence intro teasing the trip.\n\n"
+                    "## ✈️ Available Flights\n"
+                    "Render ALL flights from the `flights` array as a markdown table:\n"
+                    "| | Airline | Departs | Arrives | Duration | Stops | Price/person |\n"
+                    "|---|---|---|---|---|---|---|\n"
+                    "Mark the recommended flight (index from `recommended_flight_index`) with ⭐ **Bold** in the first column. "
+                    "All other flights get a plain `·`. Show total price for all travelers in parentheses.\n\n"
+                    "## 🏨 Where to Stay\n"
+                    "For EACH hotel in the `hotels` list:\n"
+                    "  - **[🏨 Hotel Name](website_url)** ⭐⭐⭐ (star count matching rating)\n"
+                    "  - 💰 $X/night · 📅 X nights = $total\n"
+                    "  - One vivid sentence description\n"
+                    "  - Amenities as emoji bullets (🏊 Pool · 🍳 Breakfast · 🅿️ Parking etc.)\n\n"
+                    "## 🌤️ Weather\n"
+                    "Temperature range, conditions, 3 packing tips with emojis.\n\n"
+                    "## 💰 Budget Breakdown\n"
+                    "Markdown table: Category | Cost. End with **Total** row and ✅ within budget or ⚠️ over with note.\n\n"
+                    "## 💡 Local Tips\n"
+                    "5 specific, actionable tips with relevant emojis.\n\n"
+                    "Write with excitement and warmth. Every section should make the reader want to book immediately."
                 ),
             },
             {
@@ -439,9 +490,9 @@ async def execute_tool_call(tool_call: Any, cl_msg) -> dict:
             fn = TOOL_MAP.get(name)
             if fn is None:
                 result = {"error": f"Unknown tool: {name}"}
-            elif name in ("search_flights", "search_hotels", "format_itinerary"):
+            elif name in ("search_flights", "search_hotels"):
                 result = await fn(args, cl_msg)
-            elif name in ("parse_travel_request", "get_weather", "search_hotel_details"):
+            elif name in ("parse_travel_request", "get_weather", "search_hotel_details", "format_itinerary"):
                 result = await fn(args)
             else:
                 result = fn(args)  # sync tools

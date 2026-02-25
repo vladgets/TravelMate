@@ -67,8 +67,9 @@ class TravelOrchestrator:
             if delay:
                 await asyncio.sleep(delay)
             try:
+                model = cl.user_session.get("active_model") or self.model
                 return await litellm.acompletion(
-                    model=self.model,
+                    model=model,
                     messages=[{"role": "system", "content": self.system_prompt}] + history,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",

@@ -9,13 +9,19 @@ Chainlit handles:
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
+from datetime import datetime
+
+logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 import chainlit as cl
+from chainlit.input_widget import Select
 
 from agents.orchestrator import TravelOrchestrator
-from config.settings import get_settings
+from config.settings import SUPPORTED_MODELS, get_settings
 
 
 def _clear_action() -> cl.Action:
@@ -65,8 +71,27 @@ async def on_chat_start():
     cl.user_session.set("orchestrator", orchestrator)
     cl.user_session.set("history", [])
     cl.user_session.set("last_itinerary", None)
+    cl.user_session.set("active_model", settings.llm_model)
+
+    await cl.ChatSettings([
+        Select(
+            id="active_model",
+            label="LLM Model",
+            initial_value=settings.llm_model,
+            items={label: model_id for label, model_id in SUPPORTED_MODELS.items()},
+        )
+    ]).send()
 
     await _send_welcome(settings)
+
+
+@cl.on_settings_update
+async def on_settings_update(new_settings: dict):
+    model = new_settings.get("active_model")
+    if model:
+        cl.user_session.set("active_model", model)
+        label = next((k for k, v in SUPPORTED_MODELS.items() if v == model), model)
+        await cl.Message(content=f"✅ Switched to **{label}**").send()
 
 
 @cl.action_callback("clear_history")
@@ -100,9 +125,11 @@ async def on_export_html(action: cl.Action):
             f.write(html_bytes)
             tmp_path = f.name
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"TravelMate_Itinerary_{timestamp}.html"
         await cl.Message(
             content="🌐 Your itinerary is ready to download:",
-            elements=[cl.File(name="TravelMate_Itinerary.html", path=tmp_path)],
+            elements=[cl.File(name=filename, path=tmp_path)],
             actions=[_export_action()],
         ).send()
     except Exception as exc:
@@ -130,8 +157,10 @@ async def on_message(message: cl.Message):
         response_msg.actions = [_export_action(), _clear_action()]
         await response_msg.update()
 
-        # Store the latest itinerary for PDF export
+        # Store the latest itinerary for HTML export
         cl.user_session.set("last_itinerary", result)
+
+
     except Exception as exc:
         response_msg.content = (
             f"❌ **An error occurred:** {exc}\n\n"

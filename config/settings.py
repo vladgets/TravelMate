@@ -1,8 +1,17 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Supported models (display label → LiteLLM model ID)
+SUPPORTED_MODELS: dict[str, str] = {
+    "Claude Sonnet 4.6 — best quality": "claude-sonnet-4-6",
+    "Claude Haiku 4.5 — faster / cheaper": "claude-haiku-4-5-20251001",
+    "GPT-4.1 — OpenAI": "gpt-4.1",
+    "GPT-4.1 mini — OpenAI faster / cheaper": "gpt-4.1-mini",
+}
+
 
 class Settings(BaseSettings):
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = "claude-sonnet-4-6" # "gpt-4.1-mini"       # Reasoning model: tool decisions, parsing, routing
+    writer_model: str = "claude-sonnet-4-6"  # Writer model: format_itinerary only
     anthropic_api_key: str = ""
     openai_api_key: str = ""
 
