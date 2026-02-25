@@ -208,6 +208,29 @@ TOOL_SCHEMAS: list[dict] = [
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+def _extract_json_object(text: str) -> dict:
+    """Robustly extract a JSON object from LLM output.
+
+    Handles three common cases:
+      1. Pure JSON                   → {"key": "value"}
+      2. Markdown code fence         → ```json\\n{...}\\n```
+      3. JSON embedded in prose      → "Here you go: {...} enjoy!"
+    """
+    import re
+    # Strip markdown code fences
+    text = re.sub(r"```(?:json)?\s*|\s*```", "", text).strip()
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Find the first {...} block in the text
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return json.loads(match.group())
+    raise ValueError(f"No valid JSON object found in LLM response: {text[:200]}")
+
+
 async def _tool_parse_travel_request(args: dict) -> dict:
     """Use LLM with JSON mode to extract structured params from free text."""
     import datetime
@@ -222,7 +245,7 @@ async def _tool_parse_travel_request(args: dict) -> dict:
                 "content": (
                     "Extract travel parameters from the user's request and return ONLY valid JSON "
                     "with these fields:\n"
-                    "- origin (IATA airport code, e.g. SFO, JFK)\n"
+                    "- origin (IATA airport code of the PRIMARY departure airport, e.g. SFO, JFK — if multiple airports mentioned pick the major one)\n"
                     "- destination (IATA airport code for the PRIMARY/FIRST destination)\n"
                     "- city_code (IATA city code for the primary destination, usually same as destination airport)\n"
                     "- depart_date (YYYY-MM-DD) — the day the traveler flies out\n"
@@ -245,13 +268,13 @@ async def _tool_parse_travel_request(args: dict) -> dict:
         ],
         response_format={"type": "json_object"},
     )
-    content = response.choices[0].message.content
+    content = (response.choices[0].message.content or "").strip()
     if not content:
         raise ValueError(
             "LLM returned empty response for travel request parsing. "
             "Try rephrasing your request with a clear origin, destination, and dates."
         )
-    return json.loads(content)
+    return _extract_json_object(content)
 
 
 async def _tool_search_flights(args: dict, cl_msg) -> dict:

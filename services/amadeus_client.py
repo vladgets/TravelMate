@@ -64,6 +64,13 @@ _MOCK_HOTELS: dict[str, list[dict]] = {
         {"name": "Ace Hotel New York", "stars": 4, "price_per_night_usd": 295, "rating": 4.4, "amenities": ["Free WiFi", "Rooftop bar", "Midtown location"]},
         {"name": "Pod 51", "stars": 3, "price_per_night_usd": 145, "rating": 4.0, "amenities": ["Free WiFi", "Compact rooms", "Midtown East"]},
     ],
+    "OGG": [
+        {"name": "Four Seasons Resort Maui at Wailea", "stars": 5, "price_per_night_usd": 850, "rating": 4.9, "amenities": ["Beachfront", "3 pools", "Spa", "Fine dining", "Snorkeling"]},
+        {"name": "Andaz Maui at Wailea Resort", "stars": 5, "price_per_night_usd": 620, "rating": 4.8, "amenities": ["Oceanfront", "Pool", "Spa", "Free WiFi", "Sunset views"]},
+        {"name": "Wailea Beach Resort Marriott", "stars": 4, "price_per_night_usd": 420, "rating": 4.6, "amenities": ["Beachfront", "Pool", "Spa", "Restaurant", "Free WiFi"]},
+        {"name": "Aston at The Whaler on Kaanapali Beach", "stars": 4, "price_per_night_usd": 285, "rating": 4.4, "amenities": ["Beachfront", "Pool", "Kitchen", "Free WiFi", "Kaanapali Beach"]},
+        {"name": "Pono Kai Resort", "stars": 3, "price_per_night_usd": 195, "rating": 4.2, "amenities": ["Pool", "Free WiFi", "Full kitchen", "Garden view"]},
+    ],
     "LON": [
         {"name": "The Savoy", "stars": 5, "price_per_night_usd": 850, "rating": 4.9, "amenities": ["Spa", "River Thames view", "Fine dining", "Historic building"]},
         {"name": "Hoxton Shoreditch", "stars": 4, "price_per_night_usd": 230, "rating": 4.5, "amenities": ["Free WiFi", "Bar", "Trendy East London"]},
