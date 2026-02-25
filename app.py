@@ -9,6 +9,9 @@ Chainlit handles:
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import chainlit as cl
 
 from agents.orchestrator import TravelOrchestrator
@@ -21,6 +24,15 @@ def _clear_action() -> cl.Action:
         label="🗑️ New Conversation",
         payload={"action": "clear"},
         description="Clear conversation history to start a fresh request",
+    )
+
+
+def _export_action() -> cl.Action:
+    return cl.Action(
+        name="export_pdf",
+        label="📄 Export PDF",
+        payload={"action": "export"},
+        description="Download this itinerary as a PDF file",
     )
 
 
@@ -52,6 +64,7 @@ async def on_chat_start():
 
     cl.user_session.set("orchestrator", orchestrator)
     cl.user_session.set("history", [])
+    cl.user_session.set("last_itinerary", None)
 
     await _send_welcome(settings)
 
@@ -59,6 +72,7 @@ async def on_chat_start():
 @cl.action_callback("clear_history")
 async def on_clear_history(action: cl.Action):
     cl.user_session.set("history", [])
+    cl.user_session.set("last_itinerary", None)
     await action.remove()
     await cl.Message(
         content="🗑️ **Conversation cleared.** Start a new trip request below.",
@@ -66,12 +80,43 @@ async def on_clear_history(action: cl.Action):
     ).send()
 
 
+@cl.action_callback("export_pdf")
+async def on_export_pdf(action: cl.Action):
+    itinerary: str | None = cl.user_session.get("last_itinerary")
+
+    if not itinerary:
+        await cl.Message(content="⚠️ No itinerary to export yet. Plan a trip first!").send()
+        return
+
+    await action.remove()
+
+    from utils.pdf_export import generate_itinerary_pdf
+
+    tmp_path = None
+    try:
+        pdf_bytes = generate_itinerary_pdf(itinerary)
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp_path = f.name
+
+        await cl.Message(
+            content="📄 Your itinerary is ready to download:",
+            elements=[cl.File(name="TravelMate_Itinerary.pdf", path=tmp_path)],
+            actions=[_export_action()],
+        ).send()
+    except Exception as exc:
+        await cl.Message(content=f"❌ PDF generation failed: {exc}").send()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     history: list[dict] = cl.user_session.get("history", [])
     orchestrator: TravelOrchestrator = cl.user_session.get("orchestrator")
 
-    # Create the response message first so we have its ID for Step parent_id
     response_msg = cl.Message(content="")
     await response_msg.send()
 
@@ -82,8 +127,11 @@ async def on_message(message: cl.Message):
             cl_msg=response_msg,
         )
         response_msg.content = result
-        response_msg.actions = [_clear_action()]
+        response_msg.actions = [_export_action(), _clear_action()]
         await response_msg.update()
+
+        # Store the latest itinerary for PDF export
+        cl.user_session.set("last_itinerary", result)
     except Exception as exc:
         response_msg.content = (
             f"❌ **An error occurred:** {exc}\n\n"
