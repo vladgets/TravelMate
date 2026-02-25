@@ -29,10 +29,10 @@ def _clear_action() -> cl.Action:
 
 def _export_action() -> cl.Action:
     return cl.Action(
-        name="export_pdf",
-        label="📄 Export PDF",
+        name="export_html",
+        label="🌐 Download HTML",
         payload={"action": "export"},
-        description="Download this itinerary as a PDF file",
+        description="Download this itinerary as a styled HTML file",
     )
 
 
@@ -80,8 +80,8 @@ async def on_clear_history(action: cl.Action):
     ).send()
 
 
-@cl.action_callback("export_pdf")
-async def on_export_pdf(action: cl.Action):
+@cl.action_callback("export_html")
+async def on_export_html(action: cl.Action):
     itinerary: str | None = cl.user_session.get("last_itinerary")
 
     if not itinerary:
@@ -90,23 +90,23 @@ async def on_export_pdf(action: cl.Action):
 
     await action.remove()
 
-    from utils.pdf_export import generate_itinerary_pdf
+    from utils.html_export import generate_itinerary_html
 
     tmp_path = None
     try:
-        pdf_bytes = generate_itinerary_pdf(itinerary)
+        html_bytes = generate_itinerary_html(itinerary)
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            f.write(pdf_bytes)
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            f.write(html_bytes)
             tmp_path = f.name
 
         await cl.Message(
-            content="📄 Your itinerary is ready to download:",
-            elements=[cl.File(name="TravelMate_Itinerary.pdf", path=tmp_path)],
+            content="🌐 Your itinerary is ready to download:",
+            elements=[cl.File(name="TravelMate_Itinerary.html", path=tmp_path)],
             actions=[_export_action()],
         ).send()
     except Exception as exc:
-        await cl.Message(content=f"❌ PDF generation failed: {exc}").send()
+        await cl.Message(content=f"❌ HTML export failed: {exc}").send()
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
