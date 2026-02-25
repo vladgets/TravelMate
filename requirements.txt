@@ -1,5 +1,5 @@
 chainlit==2.5.5
-litellm==1.57.4
+litellm>=1.81.15
 anthropic>=0.45.0
 openai>=1.58.0
 amadeus==8.1.0
