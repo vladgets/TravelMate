@@ -25,6 +25,10 @@ You MUST execute `search_flights` and `get_weather` in the same tool call batch 
 result directly to `search_hotels`. Never recalculate or derive hotel dates independently —
 they must be identical to `depart_date` and `return_date`.
 
+### Step 2.5 — Enrich Hotel Data
+Call `search_hotel_details` with ALL hotel names returned by `search_hotels` and the city name.
+This fetches each hotel's official website URL, a short description, and a hero image — all in one call.
+
 ### Step 3 — Validate Budget
 Call `calculate_budget` with:
 - The best flight price from results
@@ -37,7 +41,8 @@ If the total exceeds the user's budget:
 - Do NOT just say "it's over budget" — find an alternative
 
 ### Step 4 — Format the Itinerary
-Call `format_itinerary` with all gathered data to produce a polished response.
+Call `format_itinerary` with all gathered data including the enriched `hotels` list
+from `search_hotel_details` (which contains website_url, description, and image_url per hotel).
 
 ## Multi-Turn Conversations
 

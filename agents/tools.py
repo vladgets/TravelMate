@@ -147,6 +147,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "search_hotel_details",
+            "description": (
+                "Search the web to find the official website URL, a short description, "
+                "and a hero image URL for a list of hotels — all in one call. "
+                "Call this after search_hotels, passing all returned hotel names at once."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hotel_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of hotel names to search for",
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "City where the hotels are located (e.g. Barcelona)",
+                    },
+                },
+                "required": ["hotel_names", "city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "format_itinerary",
             "description": "Produce a polished markdown itinerary from all gathered trip data.",
             "parameters": {
@@ -158,7 +184,11 @@ TOOL_SCHEMAS: list[dict] = [
                         "description": "{'depart': str, 'return': str, 'num_nights': int}",
                     },
                     "flight": {"type": "object", "description": "Best flight offer dict"},
-                    "hotel": {"type": "object", "description": "Best hotel offer dict"},
+                    "hotels": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of hotel offers merged with web-search details (name, price, stars, website_url, description, image_url)",
+                    },
                     "weather": {"type": "object", "description": "Weather info dict"},
                     "budget_summary": {"type": "object", "description": "Budget breakdown dict"},
                     "tips": {
@@ -283,6 +313,77 @@ async def _tool_get_weather(args: dict) -> dict:
         await client.aclose()
 
 
+async def _tool_search_hotel_details(args: dict) -> dict:
+    """Use Claude web search to get website, description, and image for all hotels in one call."""
+    import re
+    import anthropic
+
+    hotel_names = args["hotel_names"]
+    city = args["city"]
+    settings = get_settings()
+
+    is_claude = "claude" in settings.llm_model.lower()
+
+    if is_claude and settings.anthropic_api_key:
+        try:
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            hotel_list = "\n".join(f"- {name}" for name in hotel_names)
+
+            response = await client.messages.create(
+                model=settings.llm_model,
+                max_tokens=2048,
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": len(hotel_names) + 2,
+                }],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Search for each of these hotels in {city} and return ONLY a JSON array. "
+                        f"For each hotel find: official website URL, a 2-sentence description "
+                        f"highlighting key features and location, and a hero image URL "
+                        f"(look for og:image meta tag or main property photo on the official site).\n\n"
+                        f"Hotels:\n{hotel_list}\n\n"
+                        f"Return ONLY a valid JSON array, no markdown, no explanation:\n"
+                        f'[{{"name": "...", "website_url": "https://...", '
+                        f'"description": "...", "image_url": "https://..."}}]'
+                    ),
+                }],
+            )
+
+            # Extract the final text block (after web search tool use blocks)
+            text_content = next(
+                (block.text for block in response.content if hasattr(block, "text")),
+                "",
+            )
+
+            # Strip markdown code fences if present
+            text_content = re.sub(r"```(?:json)?\s*|\s*```", "", text_content).strip()
+            json_match = re.search(r"\[.*\]", text_content, re.DOTALL)
+            if json_match:
+                return {"hotels": json.loads(json_match.group())}
+
+        except Exception:
+            pass  # Fall through to Google search fallback
+
+    # Fallback: construct Google search URLs (works for any model)
+    return {
+        "hotels": [
+            {
+                "name": name,
+                "website_url": (
+                    f"https://www.google.com/search?q="
+                    f"{name.replace(' ', '+')}+{city.replace(' ', '+')}+official+site"
+                ),
+                "description": "",
+                "image_url": "",
+            }
+            for name in hotel_names
+        ]
+    }
+
+
 def _tool_calculate_budget(args: dict) -> dict:
     flight = float(args["flight_price_usd"])
     hotel_nightly = float(args["hotel_price_per_night_usd"])
@@ -322,9 +423,16 @@ async def _tool_format_itinerary(args: dict) -> dict:
                 "role": "system",
                 "content": (
                     "You are a travel writer. Produce a beautifully formatted markdown itinerary "
-                    "using the provided trip data. Include sections for: Flight Details, "
-                    "Accommodation, Weather Forecast, Budget Summary, and Top Travel Tips. "
-                    "Make it engaging, specific, and practical. Use emojis sparingly for readability."
+                    "using the provided trip data. Include these sections:\n\n"
+                    "1. **Flight Details** — airline, price, duration, stops, times\n"
+                    "2. **Accommodation Options** — for each hotel in the `hotels` list:\n"
+                    "   - If `image_url` is present and non-empty: embed it as `![Hotel Name](image_url)`\n"
+                    "   - Render the hotel name as a clickable link using `website_url`: `[Name](url)`\n"
+                    "   - Show stars, nightly rate, description, and amenities\n"
+                    "3. **Weather Forecast** — conditions, temperature, what to pack\n"
+                    "4. **Budget Summary** — clear breakdown table\n"
+                    "5. **Top Travel Tips** — 4-5 specific, actionable tips\n\n"
+                    "Make it engaging and practical. Use emojis sparingly."
                 ),
             },
             {
@@ -345,6 +453,7 @@ TOOL_MAP = {
     "search_flights": _tool_search_flights,
     "search_hotels": _tool_search_hotels,
     "get_weather": _tool_get_weather,
+    "search_hotel_details": _tool_search_hotel_details,
     "calculate_budget": _tool_calculate_budget,
     "format_itinerary": _tool_format_itinerary,
 }
@@ -363,7 +472,7 @@ async def execute_tool_call(tool_call: Any, cl_msg) -> dict:
                 result = {"error": f"Unknown tool: {name}"}
             elif name in ("search_flights", "search_hotels", "format_itinerary"):
                 result = await fn(args, cl_msg)
-            elif name in ("parse_travel_request", "get_weather"):
+            elif name in ("parse_travel_request", "get_weather", "search_hotel_details"):
                 result = await fn(args)
             else:
                 result = fn(args)  # sync tools
