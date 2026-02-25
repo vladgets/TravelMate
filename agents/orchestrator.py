@@ -15,6 +15,7 @@ Key agentic behaviors demonstrated:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -34,6 +35,23 @@ def _load_system_prompt() -> str:
     if prompt_path.exists():
         return prompt_path.read_text()
     return "You are TravelMate, an expert AI travel planner."
+
+
+def _stub_format_itinerary(history: list[dict]) -> None:
+    """Replace the format_itinerary tool result's markdown with a stub.
+
+    The full markdown is already in the subsequent assistant message, so
+    carrying it again in the tool result only wastes tokens on future turns.
+    """
+    for msg in history:
+        if msg.get("role") == "tool" and msg.get("name") == "format_itinerary":
+            try:
+                content = json.loads(msg["content"])
+                if "markdown" in content:
+                    content["markdown"] = "[rendered]"
+                    msg["content"] = json.dumps(content)
+            except (json.JSONDecodeError, KeyError):
+                pass
 
 
 class TravelOrchestrator:
@@ -121,6 +139,10 @@ class TravelOrchestrator:
                 # Final answer reached
                 final_text = assistant_message.content or ""
                 history.append({"role": "assistant", "content": final_text})
+                # Level-1 context pruning: the full itinerary markdown is now
+                # in the assistant message above, so stub the tool result to
+                # avoid carrying ~600 duplicate tokens into future turns.
+                _stub_format_itinerary(history)
                 return final_text
 
         # Safety fallback if loop limit hit
