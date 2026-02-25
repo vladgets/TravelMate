@@ -19,7 +19,7 @@ def _clear_action() -> cl.Action:
     return cl.Action(
         name="clear_history",
         label="🗑️ New Conversation",
-        value="clear",
+        payload={"action": "clear"},
         description="Clear conversation history to start a fresh request",
     )
 
