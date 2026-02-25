@@ -21,6 +21,10 @@ Then call:
 
 You MUST execute `search_flights` and `get_weather` in the same tool call batch (parallel execution).
 
+**Date consistency rule:** Always pass `check_in` and `check_out` from the `parse_travel_request`
+result directly to `search_hotels`. Never recalculate or derive hotel dates independently —
+they must be identical to `depart_date` and `return_date`.
+
 ### Step 3 — Validate Budget
 Call `calculate_budget` with:
 - The best flight price from results
