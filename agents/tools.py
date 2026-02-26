@@ -197,6 +197,18 @@ async def _tool_parse_travel_request(args: dict) -> dict:
     import datetime
     today = datetime.date.today().isoformat()
 
+    # Inject the user's saved profile as additional context
+    profile = ""
+    try:
+        profile = cl.user_session.get("profile") or ""
+    except Exception:
+        pass
+    profile_section = (
+        f'\n\nUser profile (use as defaults when not specified by the user):\n"{profile}"'
+        if profile
+        else ""
+    )
+
     response = await litellm.acompletion(
         model=_get_active_model(),
         messages=[
@@ -222,6 +234,7 @@ async def _tool_parse_travel_request(args: dict) -> dict:
                     f"Today's date is {today}. Infer reasonable dates if only a month is mentioned — "
                     "use the next upcoming occurrence of that month.\n\n"
                     "Return ONLY the JSON object, no explanation."
+                    + profile_section
                 ),
             },
             {"role": "user", "content": args["user_message"]},

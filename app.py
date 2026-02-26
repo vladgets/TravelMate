@@ -18,10 +18,11 @@ logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message
 logger = logging.getLogger(__name__)
 
 import chainlit as cl
-from chainlit.input_widget import Select
+from chainlit.input_widget import Select, TextInput
 
 from agents.orchestrator import TravelOrchestrator
 from config.settings import SUPPORTED_MODELS, get_settings
+from services.profile_store import load_profile, save_profile
 
 
 def _clear_action() -> cl.Action:
@@ -42,9 +43,15 @@ def _export_action() -> cl.Action:
     )
 
 
-async def _send_welcome(settings):
+async def _send_welcome(settings, profile: str):
     provider = settings.hotel_provider.upper()
     model_display = settings.llm_model
+
+    profile_line = (
+        f"\n📋 **Your profile:** {profile}"
+        if profile
+        else "\n📋 **No profile set** — add your preferences in ⚙️ Settings for personalised results."
+    )
 
     await cl.Message(
         content=(
@@ -52,12 +59,12 @@ async def _send_welcome(settings):
             f"I'm your AI vacation planner. Tell me where you want to go and I'll handle everything — "
             f"flights, hotels, weather, and a complete itinerary within your budget.\n\n"
             f"**Try something like:**\n"
-            f"> *I want to take my partner to Barcelona for 7 nights in April, flying from New York. "
-            f"Budget is around $4000. We love food and art.*\n\n"
+            f"> *Barcelona for a week in April, budget $4000*\n\n"
             f"---\n"
             f"🤖 **Model:** `{model_display}` &nbsp;|&nbsp; "
-            f"🏨 **Hotel data:** `{provider}` &nbsp;|&nbsp; "
-            f"✈️ **Flights:** `Amadeus sandbox`"
+            f"🏨 **Hotels:** `{provider}` &nbsp;|&nbsp; "
+            f"✈️ **Flights:** `Amadeus sandbox`\n"
+            f"{profile_line}"
         ),
         actions=[_clear_action()],
     ).send()
@@ -67,11 +74,13 @@ async def _send_welcome(settings):
 async def on_chat_start():
     settings = get_settings()
     orchestrator = TravelOrchestrator(settings)
+    profile = load_profile()
 
     cl.user_session.set("orchestrator", orchestrator)
     cl.user_session.set("history", [])
     cl.user_session.set("last_itinerary", None)
     cl.user_session.set("active_model", settings.llm_model)
+    cl.user_session.set("profile", profile)
 
     await cl.ChatSettings([
         Select(
@@ -79,10 +88,16 @@ async def on_chat_start():
             label="LLM Model",
             initial_value=settings.llm_model,
             items={label: model_id for label, model_id in SUPPORTED_MODELS.items()},
-        )
+        ),
+        TextInput(
+            id="profile",
+            label="Your Travel Profile",
+            initial=profile,
+            placeholder="e.g. I usually fly from JFK, prefer luxury hotels, love food and art",
+        ),
     ]).send()
 
-    await _send_welcome(settings)
+    await _send_welcome(settings, profile)
 
 
 @cl.on_settings_update
@@ -92,6 +107,12 @@ async def on_settings_update(new_settings: dict):
         cl.user_session.set("active_model", model)
         label = next((k for k, v in SUPPORTED_MODELS.items() if v == model), model)
         await cl.Message(content=f"✅ Switched to **{label}**").send()
+
+    profile = new_settings.get("profile", "").strip()
+    cl.user_session.set("profile", profile)
+    save_profile(profile)
+    if profile:
+        await cl.Message(content=f"✅ Profile saved: *{profile[:80]}{'...' if len(profile) > 80 else ''}*").send()
 
 
 @cl.action_callback("clear_history")
