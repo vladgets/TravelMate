@@ -22,6 +22,8 @@ class FlightResult(BaseModel):
     depart_time: str
     arrive_time: str
     flight_number: str = ""
+    origin: str = ""
+    destination: str = ""
 
 
 class HotelResult(BaseModel):

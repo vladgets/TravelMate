@@ -180,6 +180,8 @@ class AmadeusClient(FlightProvider, HotelProvider):
                         depart_time=first_seg["departure"]["at"],
                         arrive_time=last_seg["arrival"]["at"],
                         flight_number=flight_number,
+                        origin=first_seg["departure"].get("iataCode", origin.upper()),
+                        destination=last_seg["arrival"].get("iataCode", destination.upper()),
                     )
                 )
             except (KeyError, ValueError):

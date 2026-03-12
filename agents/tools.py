@@ -33,6 +33,16 @@ def _get_active_model() -> str:
     return get_settings().llm_model
 
 
+def _get_search_model() -> str:
+    """Return a cheaper model for web search calls (Haiku for Claude, mini for OpenAI)."""
+    active = _get_active_model()
+    if "claude" in active.lower():
+        return "claude-haiku-4-5-20251001"
+    if "gpt" in active.lower():
+        return "gpt-4.1-mini"
+    return active
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (OpenAI function-calling format)
 # ---------------------------------------------------------------------------
@@ -144,6 +154,21 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "search_activities",
+            "description": "Search top attractions, activities, and restaurants at the destination using Foursquare. Call after search_hotels.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "City name, e.g. 'Paris' or 'Tokyo, Japan'"},
+                    "num_days": {"type": "integer", "description": "Number of days at destination, used to size results"},
+                },
+                "required": ["city", "num_days"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "format_itinerary",
             "description": "Produce the final polished markdown itinerary with images and links.",
             "parameters": {
@@ -157,6 +182,7 @@ TOOL_SCHEMAS: list[dict] = [
                     "weather":        {"type": "object"},
                     "budget_summary": {"type": "object"},
                     "tips":           {"type": "array", "items": {"type": "string"}},
+                    "activities":     {"type": "array", "items": {"type": "object"}, "description": "Activities from search_activities"},
                 },
                 "required": ["destination", "dates"],
             },
@@ -331,7 +357,7 @@ async def _tool_search_hotel_details(args: dict) -> dict:
     hotel_names = args["hotel_names"][:3]  # Cap at 3 to limit web search costs
     city = args["city"]
     settings = get_settings()
-    active_model = _get_active_model()
+    active_model = _get_search_model()
 
     _SEARCH_PROMPT = (
         f"Search for these hotels in {city}. "
@@ -404,6 +430,36 @@ async def _tool_search_hotel_details(args: dict) -> dict:
     }
 
 
+async def _tool_search_activities(args: dict) -> dict:
+    """Return top attractions, restaurants, and experiences using the cheap model + JSON mode."""
+    city = args["city"]
+    num_days = int(args.get("num_days", 3))
+    count = min(num_days * 3, 12)
+    search_model = _get_search_model()
+
+    response = await litellm.acompletion(
+        model=search_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"Return a JSON object with key 'activities' containing an array of {count} "
+                    f"top things to do, see, and eat in {city}. "
+                    "Mix landmarks, museums, parks, restaurants, and local experiences. "
+                    'Each item: {"name":"...","category":"Landmark|Museum|Restaurant|Park|Experience","description":"one vivid sentence"}. '
+                    "Return ONLY the JSON object."
+                ),
+            },
+            {"role": "user", "content": f"Top {count} activities for {num_days} days in {city}"},
+        ],
+        response_format={"type": "json_object"},
+    )
+    content = (response.choices[0].message.content or "").strip()
+    data = _extract_json_object(content)
+    activities = data.get("activities", [])
+    return {"activities": activities, "city": city}
+
+
 def _tool_calculate_budget(args: dict) -> dict:
     flight = float(args["flight_price_usd"])
     hotel_nightly = float(args["hotel_price_per_night_usd"])
@@ -434,10 +490,10 @@ def _tool_calculate_budget(args: dict) -> dict:
     }
 
 
-async def _tool_format_itinerary(args: dict) -> dict:
+async def _tool_format_itinerary(args: dict, cl_msg: cl.Message) -> dict:
     writer_model = get_settings().writer_model
     logger.info("[format_itinerary] Using writer model: %s", writer_model)
-    response = await litellm.acompletion(
+    stream = await litellm.acompletion(
         model=writer_model,
         messages=[
             {
@@ -449,8 +505,9 @@ async def _tool_format_itinerary(args: dict) -> dict:
                     "A warm 2-sentence intro teasing the trip.\n\n"
                     "## ✈️ Available Flights\n"
                     "Render ALL flights from the `flights` array as a markdown table:\n"
-                    "| | Airline | Departs | Arrives | Duration | Stops | Price/person |\n"
-                    "|---|---|---|---|---|---|---|\n"
+                    "| | Airline | From → To | Departs | Arrives | Duration | Stops | Price/person |\n"
+                    "|---|---|---|---|---|---|---|---|\n"
+                    "The 'From → To' column should show origin and destination IATA codes, e.g. `JFK → BCN`. "
                     "Mark the recommended flight (index from `recommended_flight_index`) with ⭐ **Bold** in the first column. "
                     "All other flights get a plain `·`. Show total price for all travelers in parentheses.\n\n"
                     "## 🏨 Where to Stay\n"
@@ -465,6 +522,9 @@ async def _tool_format_itinerary(args: dict) -> dict:
                     "Markdown table: Category | Cost. End with **Total** row and ✅ within budget or ⚠️ over with note.\n\n"
                     "## 💡 Local Tips\n"
                     "5 specific, actionable tips with relevant emojis.\n\n"
+                    "## 🗓️ Want a Day-by-Day Plan?\n"
+                    "End with this exact line (no variation):\n"
+                    "> 💬 **Ask me for a day-by-day activity plan** and I'll build a detailed schedule for your whole trip!\n\n"
                     "Write with excitement and warmth. Every section should make the reader want to book immediately."
                 ),
             },
@@ -473,8 +533,15 @@ async def _tool_format_itinerary(args: dict) -> dict:
                 "content": f"Format this trip data into a complete itinerary:\n{json.dumps(args, indent=2)}",
             },
         ],
+        stream=True,
     )
-    return {"markdown": response.choices[0].message.content}
+    tokens = []
+    async for chunk in stream:
+        token = chunk.choices[0].delta.content or ""
+        if token:
+            tokens.append(token)
+            await cl_msg.stream_token(token)
+    return {"markdown": "".join(tokens)}
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +553,7 @@ TOOL_MAP = {
     "search_flights": _tool_search_flights,
     "search_hotels": _tool_search_hotels,
     "get_weather": _tool_get_weather,
+    "search_activities": _tool_search_activities,
     "search_hotel_details": _tool_search_hotel_details,
     "calculate_budget": _tool_calculate_budget,
     "format_itinerary": _tool_format_itinerary,
@@ -505,8 +573,10 @@ async def execute_tool_call(tool_call: Any, cl_msg) -> dict:
                 result = {"error": f"Unknown tool: {name}"}
             elif name in ("search_flights", "search_hotels"):
                 result = await fn(args, cl_msg)
-            elif name in ("parse_travel_request", "get_weather", "search_hotel_details", "format_itinerary"):
+            elif name in ("parse_travel_request", "get_weather", "search_activities", "search_hotel_details"):
                 result = await fn(args)
+            elif name == "format_itinerary":
+                result = await fn(args, cl_msg)
             else:
                 result = fn(args)  # sync tools
 

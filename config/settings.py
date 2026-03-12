@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     amadeus_client_secret: str = ""
     expedia_eps_client_id: str = ""
     expedia_eps_client_secret: str = ""
+    foursquare_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

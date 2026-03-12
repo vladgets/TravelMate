@@ -61,19 +61,32 @@ class TravelOrchestrator:
         self.system_prompt = _load_system_prompt()
         self._configure_litellm()
 
-    async def _completion_with_retry(self, history: list[dict]):
-        """Call LiteLLM with automatic retry on rate limit errors."""
+    async def _completion_with_retry(self, history: list[dict], cl_msg: cl.Message):
+        """Call LiteLLM with streaming and automatic retry on rate limit errors.
+
+        All completions use stream=True. For tool-call iterations the model
+        emits no content tokens, so the UI sees nothing. For the final answer,
+        tokens are forwarded to cl_msg in real-time via stream_token().
+        """
         for attempt, delay in enumerate([0] + _RETRY_DELAYS):
             if delay:
                 await asyncio.sleep(delay)
             try:
                 model = cl.user_session.get("active_model") or self.model
-                return await litellm.acompletion(
+                stream = await litellm.acompletion(
                     model=model,
                     messages=[{"role": "system", "content": self.system_prompt}] + history,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
+                    stream=True,
                 )
+                chunks = []
+                async for chunk in stream:
+                    chunks.append(chunk)
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        await cl_msg.stream_token(delta.content)
+                return litellm.stream_chunk_builder(chunks)
             except RateLimitError:
                 if attempt == len(_RETRY_DELAYS):
                     raise
@@ -99,7 +112,7 @@ class TravelOrchestrator:
         history.append({"role": "user", "content": user_message})
 
         for iteration in range(MAX_ITERATIONS):
-            response = await self._completion_with_retry(history)
+            response = await self._completion_with_retry(history, cl_msg)
 
             choice = response.choices[0]
             assistant_message = choice.message
@@ -132,6 +145,17 @@ class TravelOrchestrator:
                 # Append each tool result to history
                 for result in tool_results:
                     history.append(result)
+
+                # Short-circuit: format_itinerary already streamed the final
+                # itinerary directly to cl_msg — skip the redundant echo call.
+                for r in tool_results:
+                    if r["name"] == "format_itinerary":
+                        content = json.loads(r["content"])
+                        markdown = content.get("markdown", "")
+                        if markdown:
+                            history.append({"role": "assistant", "content": markdown})
+                            _stub_format_itinerary(history)
+                            return markdown
 
                 # Continue loop — LLM will reason over results
                 continue

@@ -174,7 +174,7 @@ async def on_message(message: cl.Message):
             history=history,
             cl_msg=response_msg,
         )
-        response_msg.content = result
+        # result was already streamed token-by-token; just add action buttons
         response_msg.actions = [_export_action(), _clear_action()]
         await response_msg.update()
 
